@@ -114,6 +114,9 @@ const GeminiFunctionResponsePart = Schema.Struct({
   }),
 })
 
+const decodeGeminiTextPart = Schema.decodeUnknownOption(GeminiTextPart)
+const decodeGeminiFunctionCallPart = Schema.decodeUnknownOption(GeminiFunctionCallPart)
+
 const GeminiContentPart = Schema.Union([
   GeminiTextPart,
   GeminiInlineDataPart,
@@ -602,7 +605,7 @@ const step = (state: ParserState, event: GeminiEvent) => {
     if (!ProviderShared.isRecord(raw)) continue
 
     if ("text" in raw) {
-      const decoded = Schema.decodeUnknownOption(GeminiTextPart)(raw)
+      const decoded = decodeGeminiTextPart(raw)
       if (decoded._tag === "Some") {
         const part = decoded.value
         const signature = part.thoughtSignature || undefined
@@ -638,7 +641,7 @@ const step = (state: ParserState, event: GeminiEvent) => {
     }
 
     if ("functionCall" in raw) {
-      const decoded = Schema.decodeUnknownOption(GeminiFunctionCallPart)(raw)
+      const decoded = decodeGeminiFunctionCallPart(raw)
       if (decoded._tag === "None") continue
       const part = decoded.value
       const input = part.functionCall.args === undefined ? {} : part.functionCall.args
