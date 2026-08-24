@@ -157,7 +157,7 @@ type AnthropicDocumentBlock = Schema.Schema.Type<typeof AnthropicDocumentBlock>
 const AnthropicThinkingBlock = Schema.Struct({
   type: Schema.tag("thinking"),
   thinking: Schema.String,
-  signature: Schema.optional(Schema.String),
+  signature: Schema.String,
   cache_control: Schema.optional(AnthropicCacheControl),
 })
 
@@ -701,6 +701,19 @@ const lowerToolResultContent = Effect.fnUntraced(function* (part: ToolResultPart
   return yield* Effect.forEach(content, lowerToolResultContentItem)
 })
 
+// Derived from modelsdev2 provider naming: kimi and xiaomi coding surfaces
+// tolerate empty thinking signatures (SDK ThinkingBlockParam:3217 is otherwise
+// strict). Provider ids and domains mirror providers/*/provider.toml —
+// kimi-for-coding / kimi-coding / api.kimi.com/coding, xiaomi /
+// xiaomi-token-plan-* / xiaomimimo.com.
+const detectRequireSignature = (provider: string, baseURL: string | undefined): boolean => {
+  const p = provider.toLowerCase()
+  const url = (baseURL ?? "").toLowerCase()
+  if (p.includes("kimi") || url.includes("api.kimi.com/coding")) return false
+  if (p === "xiaomi" || p.startsWith("xiaomi-token-plan") || url.includes("xiaomimimo.com")) return false
+  return true
+}
+
 // Mid-conversation system messages became available with Opus 4.8 and version
 // 5 of the other supported Claude families. Treat later family versions as
 // compatible without assuming that every Anthropic Messages model is Claude.
@@ -807,16 +820,39 @@ const lowerMessages = Effect.fn("AnthropicMessages.lowerMessages")(function* (
           continue
         }
         if (part.type === "reasoning") {
-          // Mirrors Vercel's @ai-sdk/anthropic: a signature marks visible
-          // thinking; only signature-less parts carrying redactedData
-          // round-trip as opaque redacted_thinking blocks.
+          // A signature marks visible thinking; only signature-less parts carrying
+          // redactedData round-trip as opaque redacted_thinking blocks.
           const signature = part.encrypted ?? signatureFromMetadata(part.providerMetadata)
           const redactedData = redactedDataFromMetadata(part.providerMetadata)
           if (signature === undefined && redactedData !== undefined) {
             content.push({ type: "redacted_thinking", data: redactedData })
             continue
           }
-          content.push({ type: "thinking", thinking: part.text, signature })
+          const hasSignature = typeof signature === "string" && signature.trim().length > 0
+          if (!hasSignature) {
+            if (part.text.trim().length === 0) continue
+            // Derive from explicit compat or provider inference (kimi coding
+            // surfaces tolerate empty signatures — inferred from modelsdev2
+            // provider naming).
+            const provider = String(request.model.provider)
+            const baseURL = request.model.route.endpoint.baseURL
+            const requireSignature =
+              request.model.compatibility?.requireSignature ?? detectRequireSignature(provider, baseURL)
+            if (!requireSignature) {
+              content.push({ type: "thinking", thinking: part.text, signature: "" })
+              continue
+            }
+            // Without a signature this cannot be a valid thinking block per
+            // the SDK ThinkingBlockParam:3217 — demote to text so the
+            // conversation remains sendable.
+            content.push({
+              type: "text",
+              text: part.text,
+              cache_control: cacheControl(breakpoints, part.cache),
+            })
+            continue
+          }
+          content.push({ type: "thinking", thinking: part.text, signature: signature! })
           continue
         }
         if (part.type === "tool-call") {
